@@ -1,206 +1,103 @@
-// #ifndef STEGO_H
-// #define STEGO_H
-
-// #include <iostream>
-// #include <vector>
-// #include <string>
-// #include "stb_image.h"
-// #include "stb_image_write.h"
-
-// using namespace std;
-
-// class Stego {
-// private:
-//     // Helper function for writing PNG to memory (RAM) instead of disk
-//     static void write_to_mem(void *context, void *data, int size) {
-//         std::string *buffer = (std::string *)context;
-//         buffer->append((char *)data, size);
-//     }
-
-// public:
-//     // Helper: Get coordinates in Spiral Order
-//     vector<pair<int, int>> getSpiralCoords(int width, int height) {
-//         vector<pair<int, int>> coords;
-//         int top = 0, bottom = height - 1;
-//         int left = 0, right = width - 1;
-//         int dir = 0;
-
-//         while (top <= bottom && left <= right) {
-//             if (dir == 0) { // Right
-//                 for (int i = left; i <= right; ++i) coords.push_back({i, top});
-//                 top++;
-//             } else if (dir == 1) { // Down
-//                 for (int i = top; i <= bottom; ++i) coords.push_back({right, i});
-//                 right--;
-//             } else if (dir == 2) { // Left
-//                 for (int i = right; i >= left; --i) coords.push_back({i, bottom});
-//                 bottom--;
-//             } else if (dir == 3) { // Up
-//                 for (int i = bottom; i >= top; --i) coords.push_back({left, i});
-//                 left++;
-//             }
-//             dir = (dir + 1) % 4;
-//         }
-//         return coords;
-//     }
-
-//     // Embed Data: Takes RAW IMAGE DATA -> Returns NEW RAW IMAGE DATA (No Files)
-//     string embedData(const string& rawImageData, const string& binaryData) {
-//         int width, height, channels;
-        
-//         // LOAD FROM MEMORY (RAM)
-//         unsigned char* img = stbi_load_from_memory(
-//             (unsigned char*)rawImageData.data(), 
-//             rawImageData.size(), 
-//             &width, &height, &channels, 3
-//         );
-        
-//         if (!img) return "";
-
-//         string dataWithStop = binaryData + "00000000"; 
-//         vector<pair<int, int>> path = getSpiralCoords(width, height);
-//         int dataIndex = 0;
-
-//         for (auto p : path) {
-//             if (dataIndex >= dataWithStop.length()) break;
-//             int pixelIndex = (p.second * width + p.first) * 3;
-//             unsigned char& blueChannel = img[pixelIndex + 2];
-//             blueChannel &= 0xFE; 
-//             if (dataWithStop[dataIndex] == '1') blueChannel |= 1; 
-//             dataIndex++;
-//         }
-
-//         // WRITE TO MEMORY (RAM)
-//         string resultImageBuffer = "";
-//         stbi_write_png_to_func(write_to_mem, &resultImageBuffer, width, height, 3, img, width * 3);
-        
-//         stbi_image_free(img);
-//         return resultImageBuffer; // Return the PNG file as a string
-//     }
-
-//     // Extract Data: Takes RAW IMAGE DATA -> Returns TEXT (No Files)
-//     string extractData(const string& rawImageData) {
-//         int width, height, channels;
-        
-//         // LOAD FROM MEMORY (RAM)
-//         unsigned char* img = stbi_load_from_memory(
-//             (unsigned char*)rawImageData.data(), 
-//             rawImageData.size(), 
-//             &width, &height, &channels, 3
-//         );
-        
-//         if (!img) return "Error: Could not load image";
-
-//         vector<pair<int, int>> path = getSpiralCoords(width, height);
-//         string extractedBits = "";
-//         string currentByte = "";
-
-//         for (auto p : path) {
-//             int pixelIndex = (p.second * width + p.first) * 3;
-//             unsigned char blueChannel = img[pixelIndex + 2];
-//             int bit = (blueChannel & 1);
-//             extractedBits += (bit ? "1" : "0");
-//             currentByte += (bit ? "1" : "0");
-
-//             if (currentByte.length() == 8) {
-//                 if (currentByte == "00000000") {
-//                     extractedBits = extractedBits.substr(0, extractedBits.length() - 8);
-//                     break;
-//                 }
-//                 currentByte = "";
-//             }
-//         }
-
-//         stbi_image_free(img);
-//         return extractedBits;
-//     }
-// };
-
-// #endif
-
-#ifndef STEGO_H
-#define STEGO_H
+#ifndef IMAGE_STEGO_H
+#define IMAGE_STEGO_H
 
 #include <iostream>
-#include <vector>
 #include <string>
-#include <bitset>
+#include <vector>
+
 #include "stb_image.h"
 #include "stb_image_write.h"
 
-using namespace std;
-
-class Stego {
+class ImageStego {
 private:
-    static void write_to_mem(void *context, void *data, int size) {
-        std::string *buffer = (std::string *)context;
-        buffer->append((char *)data, size);
+    unsigned char* image_data;
+    int width;
+    int height;
+    int channels;
+
+    void writeBit(unsigned char& byte, char bit) {
+        if (bit == '1') byte |= 1;
+        else byte &= ~1;
+    }
+
+    char readBit(unsigned char byte) {
+        return (byte & 1) ? '1' : '0';
+    }
+
+    // NEW: Callback function used by stb_image_write to push bytes into our C++ string
+    static void stbiWriteCallback(void *context, void *data, int size) {
+        std::string* str = reinterpret_cast<std::string*>(context);
+        str->append(reinterpret_cast<const char*>(data), size);
     }
 
 public:
-    vector<pair<int, int>> getSpiralCoords(int width, int height) {
-        vector<pair<int, int>> coords;
-        int top = 0, bottom = height - 1, left = 0, right = width - 1;
-        int dir = 0;
-        while (top <= bottom && left <= right) {
-            if (dir == 0) { for (int i = left; i <= right; ++i) coords.push_back({i, top}); top++; }
-            else if (dir == 1) { for (int i = top; i <= bottom; ++i) coords.push_back({right, i}); right--; }
-            else if (dir == 2) { for (int i = right; i >= left; --i) coords.push_back({i, bottom}); bottom--; }
-            else if (dir == 3) { for (int i = bottom; i >= top; --i) coords.push_back({left, i}); left++; }
-            dir = (dir + 1) % 4;
-        }
-        return coords;
+    ImageStego() {
+        image_data = nullptr;
+        width = height = channels = 0;
     }
 
-    string embedData(const string& rawImageData, const string& binaryData) {
-        int width, height, channels;
-        unsigned char* img = stbi_load_from_memory((unsigned char*)rawImageData.data(), rawImageData.size(), &width, &height, &channels, 3);
-        if (!img) return "";
-
-        vector<pair<int, int>> path = getSpiralCoords(width, height);
-        int dataIndex = 0;
-
-        for (auto p : path) {
-            if (dataIndex >= binaryData.length()) break;
-            int pixelIndex = (p.second * width + p.first) * 3;
-            img[pixelIndex + 2] = (img[pixelIndex + 2] & 0xFE) | (binaryData[dataIndex] - '0');
-            dataIndex++;
+    ~ImageStego() {
+        if (image_data != nullptr) {
+            stbi_image_free(image_data);
         }
-
-        string resultImageBuffer = "";
-        stbi_write_png_to_func(write_to_mem, &resultImageBuffer, width, height, 3, img, width * 3);
-        stbi_image_free(img);
-        return resultImageBuffer;
     }
 
-    // UPGRADED: Reads raw bytes and safely stops at the exact end marker
-    string extractData(const string& rawImageData) {
-        int width, height, channels;
-        unsigned char* img = stbi_load_from_memory((unsigned char*)rawImageData.data(), rawImageData.size(), &width, &height, &channels, 3);
-        if (!img) return "";
+    bool loadImageFromMemory(const unsigned char* buffer, int length) {
+        if (image_data != nullptr) stbi_image_free(image_data);
+        image_data = stbi_load_from_memory(buffer, length, &width, &height, &channels, 0);
+        return image_data != nullptr;
+    }
 
-        vector<pair<int, int>> path = getSpiralCoords(width, height);
-        string extractedText = "";
-        string currentByte = "";
+    // NEW: This writes the encoded PNG data to a memory buffer instead of a file
+    std::string saveImageToMemory() {
+        std::string buffer;
+        if (!image_data) return buffer;
+        
+        // stbi_write_png_to_func safely writes the PNG formatting directly into our string buffer
+        stbi_write_png_to_func(stbiWriteCallback, &buffer, width, height, channels, image_data, width * channels);
+        return buffer;
+    }
 
-        for (auto p : path) {
-            int pixelIndex = (p.second * width + p.first) * 3;
-            currentByte += ((img[pixelIndex + 2] & 1) ? "1" : "0");
+    bool encodeData(const std::string& binaryString) {
+        if (!image_data) return false;
+        long long maxCapacity = width * height * channels;
+        
+        std::string lengthHeader = "";
+        long long dataLength = binaryString.length();
+        for (int i = 31; i >= 0; --i) {
+            lengthHeader += ((dataLength >> i) & 1) ? '1' : '0';
+        }
 
-            if (currentByte.length() == 8) {
-                extractedText += (char)std::bitset<8>(currentByte).to_ulong();
-                currentByte = "";
-                
-                // Safely look for our custom 15-character stop sequence
-                if (extractedText.length() >= 15 && extractedText.substr(extractedText.length() - 15) == ":::STEGO_END:::") {
-                    extractedText = extractedText.substr(0, extractedText.length() - 15);
-                    break;
-                }
+        std::string fullPayload = lengthHeader + binaryString;
+
+        if (fullPayload.length() > maxCapacity) return false;
+
+        for (size_t i = 0; i < fullPayload.length(); i++) {
+            writeBit(image_data[i], fullPayload[i]);
+        }
+        return true;
+    }
+
+    std::string decodeData() {
+        if (!image_data) return "";
+
+        long long dataLength = 0;
+        for (int i = 0; i < 32; i++) {
+            char bit = readBit(image_data[i]);
+            if (bit == '1') {
+                dataLength |= (1LL << (31 - i));
             }
         }
-        stbi_image_free(img);
-        return extractedText;
+
+        long long maxCapacity = width * height * channels;
+        if (dataLength < 0 || dataLength + 32 > maxCapacity) return ""; 
+
+        std::string extractedBinary = "";
+        for (long long i = 32; i < 32 + dataLength; i++) {
+            extractedBinary += readBit(image_data[i]);
+        }
+        return extractedBinary;
     }
 };
 
-#endif
+#endif // IMAGE_STEGO_H

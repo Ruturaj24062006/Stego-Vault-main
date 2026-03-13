@@ -1,110 +1,104 @@
-#ifndef HUFFMAN_H
-#define HUFFMAN_H
+#ifndef HUFFMAN_COMPRESSOR_H
+#define HUFFMAN_COMPRESSOR_H
 
 #include <iostream>
 #include <string>
 #include <queue>
 #include <unordered_map>
-#include <vector>
 
-using namespace std;
+class HuffmanCompressor {
+private:
+    struct Node {
+        char ch;
+        int freq;
+        Node *left, *right;
+        Node(char character, int frequency) {
+            ch = character;
+            freq = frequency;
+            left = right = nullptr;
+        }
+    };
 
-// A Tree Node
-struct Node {
-    char ch;
-    int freq;
-    Node *left, *right;
-};
+    struct Compare {
+        bool operator()(Node* l, Node* r) {
+            return l->freq > r->freq;
+        }
+    };
 
-// Comparison object to be used to order the heap
-struct compare {
-    bool operator()(Node* l, Node* r) {
-        return l->freq > r->freq;
+    Node* root;
+    std::unordered_map<char, std::string> huffmanCodes;
+
+    void generateCodes(Node* node, std::string code) {
+        if (!node) return;
+        if (!node->left && !node->right) huffmanCodes[node->ch] = code;
+        generateCodes(node->left, code + "0");
+        generateCodes(node->right, code + "1");
     }
-};
 
-class Huffman {
+    void destroyTree(Node* node) {
+        if (node) {
+            destroyTree(node->left);
+            destroyTree(node->right);
+            delete node;
+        }
+    }
+
 public:
-    // Store the codes (e.g., 'a' -> "110")
-    unordered_map<char, string> huffmanCode;
-    Node* root = nullptr;
+    HuffmanCompressor() { root = nullptr; }
+    ~HuffmanCompressor() { destroyTree(root); }
 
-    // Traverse the Huffman Tree and store codes in a map
-    void encode(Node* root, string str) {
-        if (root == nullptr)
-            return;
+    std::string encode(const std::string& text) {
+        if (text.empty()) return "";
 
-        if (!root->left && !root->right) {
-            huffmanCode[root->ch] = str;
+        // FIX: Clean up the old tree if someone encrypts a second time!
+        if (root != nullptr) {
+            destroyTree(root);
+            root = nullptr;
         }
+        huffmanCodes.clear();
 
-        encode(root->left, str + "0");
-        encode(root->right, str + "1");
-    }
+        std::unordered_map<char, int> freqMap;
+        for (char ch : text) freqMap[ch]++;
 
-    // MAIN FUNCTION: Build Huffman Tree and Compress text
-    // (Unit 5 - Greedy Approach using Priority Queue)
-    string compress(string text) {
-        // Count frequency of appearance of each character
-        unordered_map<char, int> freq;
-        for (char ch : text) {
-            freq[ch]++;
-        }
+        std::priority_queue<Node*, std::vector<Node*>, Compare> pq;
+        for (auto pair : freqMap) pq.push(new Node(pair.first, pair.second));
 
-        // Create a priority queue to store live nodes of Huffman tree
-        priority_queue<Node*, vector<Node*>, compare> pq;
-
-        // Create a leaf node for each character and add it to the priority queue.
-        for (auto pair : freq) {
-            Node* z = new Node();
-            z->ch = pair.first;
-            z->freq = pair.second;
-            z->left = z->right = nullptr;
-            pq.push(z);
-        }
-
-        // Standard Huffman Logic:
-        // iterate while size of heap doesn't become 1
-        while (pq.size() != 1) {
-            // Extract the two minimum freq items from the heap
+        while (pq.size() > 1) {
             Node *left = pq.top(); pq.pop();
             Node *right = pq.top(); pq.pop();
-
-            // Create a new internal node with these two nodes as children
-            // and with frequency equal to the sum of the two nodes' frequencies.
-            // Add the new node to the priority queue.
-            Node* top = new Node();
-            top->ch = '\0'; // Internal nodes don't have characters
-            top->freq = left->freq + right->freq;
-            top->left = left;
-            top->right = right;
-
-            pq.push(top);
+            Node *sumNode = new Node('\0', left->freq + right->freq);
+            sumNode->left = left;
+            sumNode->right = right;
+            pq.push(sumNode);
         }
 
-        // The remaining node is the root node and the tree is complete.
         root = pq.top();
+        generateCodes(root, "");
 
-        // Generate the binary codes
-        encode(root, "");
+        std::string encodedString = "";
+        for (char ch : text) encodedString += huffmanCodes[ch];
 
-        // Construct the encoded string
-        string str = "";
-        for (char ch : text) {
-            str += huffmanCode[ch];
-        }
-
-        return str;
+        return encodedString;
     }
 
-    // Helper to print the map (for debugging)
-    void printCodes() {
-        cout << "\n--- Huffman Codes (Greedy Mapping) ---\n";
-        for (auto pair : huffmanCode) {
-            cout << pair.first << " : " << pair.second << endl;
+    std::string decode(const std::string& encodedText) {
+        // If the tree is null, we can't decode anything!
+        if (encodedText.empty() || root == nullptr) return "";
+
+        std::string decodedString = "";
+        Node* curr = root;
+
+        for (char bit : encodedText) {
+            if (bit == '0') curr = curr->left;
+            else curr = curr->right;
+
+            if (!curr->left && !curr->right) {
+                decodedString += curr->ch;
+                curr = root; 
+            }
         }
-        cout << "--------------------------------------\n";
+        return decodedString;
     }
 };
 
-#endif
+#endif // HUFFMAN_COMPRESSOR_H

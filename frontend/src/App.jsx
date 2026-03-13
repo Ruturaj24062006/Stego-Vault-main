@@ -14,49 +14,93 @@ export default function App() {
   const [resultUrl, setResultUrl] = useState(null);
   const [resultText, setResultText] = useState(null);
   const [extractedName, setExtractedName] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+    });
+  };
 
   const handleSubmit = async () => {
     if (!coverImage) return alert("Please select a cover image!");
     
     setStatus("processing");
+    setErrorMessage("");
     const formData = new FormData();
     formData.append("image", coverImage);
     
     if (mode === 'encrypt') {
-      if (secretType === 'text') formData.append("secret_text", secretText);
-      else formData.append("secret_file", secretFile);
+      if (secretType === 'text') {
+        formData.append("message", new Blob([secretText], { type: 'text/plain' }), "secret.txt");
+      } else {
+        // Convert file to base64 with a metadata header so it round-trips safely
+        const dataUrl = await fileToBase64(secretFile);
+        const metaMessage = `STEGO_FILE|||${secretFile.name}|||${dataUrl}`;
+        formData.append("message", new Blob([metaMessage], { type: 'text/plain' }), "secret.txt");
+      }
     }
 
-    const endpoint = mode === 'encrypt' ? "https://stego-vault-ratt.onrender.com/encode" : "https://stego-vault-ratt.onrender.com/decode";
+    const endpoint = mode === 'encrypt' 
+      ? "http://localhost:8080/encode" 
+      : "http://localhost:8080/decode";
 
     try {
-      const response = await axios.post(endpoint, formData, { responseType: 'blob' });
+      const config = mode === 'encrypt' ? { responseType: 'blob' } : {};
+      
+      const response = await axios.post(endpoint, formData, config);
       
       if (mode === 'encrypt') {
         const url = window.URL.createObjectURL(new Blob([response.data]));
-        setResultUrl(url);
+        setResultUrl(url); 
       } else {
-        const filename = response.headers['x-filename'] || 'secret_file.bin';
-        setExtractedName(filename);
-
-        if (filename === 'secret.txt') {
-          const text = await response.data.text();
-          setResultText(text);
-        } else {
-          const url = window.URL.createObjectURL(new Blob([response.data]));
+        const data = response.data;
+        // Detect if hidden data was a file (encoded with our metadata header)
+        if (typeof data === 'string' && data.startsWith('STEGO_FILE|||')) {
+          const sep = '|||';
+          const first = data.indexOf(sep);
+          const second = data.indexOf(sep, first + sep.length);
+          const filename = data.substring(first + sep.length, second);
+          const dataUrl = data.substring(second + sep.length);
+          // Decode the base64 data URL into a downloadable blob
+          const [header, b64] = dataUrl.split(',');
+          const mimeMatch = header.match(/data:([^;]+)/);
+          const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+          const byteChars = atob(b64);
+          const byteArray = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
+          const blob = new Blob([byteArray], { type: mimeType });
+          const url = window.URL.createObjectURL(blob);
           setResultUrl(url);
+          setExtractedName(filename);
+        } else {
+          setResultText(data);
+          setExtractedName("Secret Message");
         }
       }
       setStatus("success");
     } catch (error) {
       console.error("Error:", error);
+      let errMsg = 'Backend Connection Failed. Is the C++ Server running on port 8080?';
+      if (error.response?.data) {
+        if (error.response.data instanceof Blob) {
+          errMsg = await error.response.data.text();
+        } else if (typeof error.response.data === 'string') {
+          errMsg = error.response.data;
+        }
+      }
+      setErrorMessage(errMsg);
       setStatus("error");
     }
   };
-
+  
   const reset = () => {
     setStatus('idle'); setResultUrl(null); setResultText(null); 
     setSecretText(""); setSecretFile(null); setCoverImage(null);
+    setErrorMessage("");
   };
 
   const scrollToTool = () => {
@@ -134,12 +178,18 @@ export default function App() {
                   <h2 className="text-2xl font-light text-white">{mode === 'encrypt' ? 'Data Hidden Successfully' : 'Secret Extracted!'}</h2>
                   
                   {mode === 'encrypt' ? (
-                    <a href={resultUrl} download="stego_locked.png" className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold py-4 rounded-xl transition-all shadow-lg">
-                      <Download className="w-5 h-5" /> Download Locked Image
-                    </a>
+                    resultUrl ? (
+                      <a href={resultUrl} download="stego_locked.png" className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold py-4 rounded-xl transition-all shadow-lg">
+                        <Download className="w-5 h-5" /> Download Locked Image
+                      </a>
+                    ) : (
+                      <div className="text-slate-400 text-sm bg-white/5 p-4 rounded-xl border border-white/10">
+                        Image saved successfully to the backend server folder as <strong>temp_encoded.png</strong>.
+                      </div>
+                    )
                   ) : (
                     <div className="bg-black/40 p-6 rounded-2xl border border-white/5 text-left">
-                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Extracted File: <span className="text-purple-400 font-bold">{extractedName}</span></p>
+                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Extracted Data: <span className="text-purple-400 font-bold">{extractedName}</span></p>
                       {resultText ? (
                         <p className="text-white font-mono break-all leading-relaxed">{resultText}</p>
                       ) : (
@@ -207,7 +257,7 @@ export default function App() {
                     {status === 'processing' ? 'Processing Matrix...' : (mode === 'encrypt' ? 'Lock Data Inside Image' : 'Extract Hidden Data')}
                   </button>
                   
-                  {status === 'error' && <div className="text-red-400 text-center text-sm mt-4 bg-red-500/10 p-3 rounded-lg border border-red-500/20">Backend Connection Failed. Is the C++ Server running?</div>}
+                  {status === 'error' && <div className="text-red-400 text-center text-sm mt-4 bg-red-500/10 p-3 rounded-lg border border-red-500/20">{errorMessage || 'Backend Connection Failed. Is the C++ Server running on port 8080?'}</div>}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -218,8 +268,8 @@ export default function App() {
       {/* 4. FEATURES / DSA SECTION */}
       <section className="py-24 px-6 max-w-7xl mx-auto">
         <div className="text-center mb-16">
-          <h2 className="text-3xl font-bold mb-4">Core Architecture & DSA</h2>
-          <p className="text-slate-400 max-w-2xl mx-auto">Engineered from scratch using C++ to implement advanced Data Structures and Algorithms for maximum security and efficiency.</p>
+          <h2 className="text-3xl font-bold mb-4">Core Architecture</h2>
+          <p className="text-slate-400 max-w-2xl mx-auto">Engineered from scratch using C++ Object-Oriented principles and advanced Data Structures for maximum security.</p>
         </div>
         
         <div className="grid md:grid-cols-3 gap-8">
@@ -230,8 +280,8 @@ export default function App() {
           </div>
           <div className="bg-white/5 border border-white/10 p-8 rounded-3xl hover:bg-white/10 transition-colors">
             <Layers className="w-10 h-10 text-purple-400 mb-6" />
-            <h3 className="text-xl font-bold mb-3">Matrix Traversal</h3>
-            <p className="text-slate-400 leading-relaxed">Employs <strong className="text-slate-200">Spiral 2D Array Traversal</strong> to distribute data dynamically, preventing linear detection by standard steganalysis tools.</p>
+            <h3 className="text-xl font-bold mb-3">OOP Architecture</h3>
+            <p className="text-slate-400 leading-relaxed">Built with <strong className="text-slate-200">Encapsulation and RAII</strong> in C++ to ensure modular, memory-safe, and highly readable system design.</p>
           </div>
           <div className="bg-white/5 border border-white/10 p-8 rounded-3xl hover:bg-white/10 transition-colors">
             <Shield className="w-10 h-10 text-cyan-400 mb-6" />
@@ -244,7 +294,7 @@ export default function App() {
       {/* 5. FOOTER */}
       <footer className="py-8 border-t border-white/5 text-center text-slate-500">
         <p className="text-sm">
-          Built by <span className="text-slate-300 font-semibold">Group 1</span> | Project © 2026
+          Built by <span className="text-slate-300 font-semibold">Group 11</span> | Project © 2026
         </p>
       </footer>
 
