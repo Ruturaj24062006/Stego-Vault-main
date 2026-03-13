@@ -4,6 +4,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Unlock, Upload, FileAudio, FileText, Image as ImageIcon, Download, CheckCircle, ArrowLeft, Shield, Cpu, Layers, ChevronDown } from 'lucide-react';
 
 export default function App() {
+  const allowedImageTypes = ['image/png', 'image/jpeg', 'image/jpg'];
+  const allowedImageExtensions = ['.png', '.jpg', '.jpeg'];
+  const maxSecretFileSizeBytes = 2 * 1024 * 1024;
+  const capacityErrorMessage = 'The selected image is too small to store this data. Please upload a larger image.';
+
   const [mode, setMode] = useState('encrypt');
   const [coverImage, setCoverImage] = useState(null);
   const [secretType, setSecretType] = useState('text'); 
@@ -25,22 +30,114 @@ export default function App() {
     });
   };
 
+  const getImageCapacityBits = (file) => {
+    return new Promise((resolve, reject) => {
+      const objectUrl = window.URL.createObjectURL(file);
+      const img = new Image();
+
+      img.onload = () => {
+        const width = img.naturalWidth || img.width;
+        const height = img.naturalHeight || img.height;
+        window.URL.revokeObjectURL(objectUrl);
+        // Conservative estimate: RGB channels with 1 bit hidden per channel.
+        resolve(width * height * 3);
+      };
+
+      img.onerror = () => {
+        window.URL.revokeObjectURL(objectUrl);
+        reject(new Error('Failed to read selected image dimensions.'));
+      };
+
+      img.src = objectUrl;
+    });
+  };
+
+  const isSupportedImageFile = (file) => {
+    if (!file) return false;
+
+    const fileName = file.name.toLowerCase();
+    const hasValidExtension = allowedImageExtensions.some((ext) => fileName.endsWith(ext));
+    const hasValidMimeType = allowedImageTypes.includes(file.type.toLowerCase());
+
+    return hasValidExtension || hasValidMimeType;
+  };
+
+  const handleCoverImageChange = (event) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    if (!isSupportedImageFile(file)) {
+      setCoverImage(null);
+      setStatus('error');
+      setErrorMessage('Only image files are supported for steganography');
+      event.target.value = '';
+      return;
+    }
+
+    setCoverImage(file);
+    if (status === 'error') {
+      setStatus('idle');
+      setErrorMessage('');
+    }
+  };
+
   const handleSubmit = async () => {
-    if (!coverImage) return alert("Please select a cover image!");
+    if (!coverImage) {
+      setStatus('error');
+      setErrorMessage('Please select a valid PNG, JPG, or JPEG image.');
+      return;
+    }
+
+    if (!isSupportedImageFile(coverImage)) {
+      setStatus('error');
+      setErrorMessage('Only image files are supported for steganography');
+      return;
+    }
     
     setStatus("processing");
     setErrorMessage("");
     const formData = new FormData();
     formData.append("image", coverImage);
+    const imageCapacityBits = await getImageCapacityBits(coverImage);
+    let secretPayload = '';
+    const textEncoder = new TextEncoder();
     
     if (mode === 'encrypt') {
       if (secretType === 'text') {
-        formData.append("message", new Blob([secretText], { type: 'text/plain' }), "secret.txt");
+        secretPayload = secretText;
+        const requiredBits = textEncoder.encode(secretPayload).length * 8 + 32;
+        if (requiredBits > imageCapacityBits) {
+          setStatus('error');
+          setErrorMessage(capacityErrorMessage);
+          return;
+        }
+        formData.append("message", new Blob([secretPayload], { type: 'text/plain' }), "secret.txt");
       } else {
+        if (!secretFile) {
+          setStatus('error');
+          setErrorMessage('Please select a file to hide.');
+          return;
+        }
+
+        if (secretFile.size > maxSecretFileSizeBytes) {
+          setStatus('error');
+          setErrorMessage('Only text or small files are supported.');
+          return;
+        }
+
         // Convert file to base64 with a metadata header so it round-trips safely
         const dataUrl = await fileToBase64(secretFile);
-        const metaMessage = `STEGO_FILE|||${secretFile.name}|||${dataUrl}`;
-        formData.append("message", new Blob([metaMessage], { type: 'text/plain' }), "secret.txt");
+        secretPayload = `STEGO_FILE|||${secretFile.name}|||${dataUrl}`;
+        const requiredBits = textEncoder.encode(secretPayload).length * 8 + 32;
+        if (requiredBits > imageCapacityBits) {
+          setStatus('error');
+          setErrorMessage(capacityErrorMessage);
+          return;
+        }
+        formData.append("message", new Blob([secretPayload], { type: 'text/plain' }), "secret.txt");
       }
     }
 
@@ -49,9 +146,27 @@ export default function App() {
       : "http://localhost:8080/decode";
 
     try {
-      const config = mode === 'encrypt' ? { responseType: 'blob' } : {};
+      const config = {
+        validateStatus: (statusCode) => statusCode < 500,
+      };
+
+      if (mode === 'encrypt') {
+        config.responseType = 'blob';
+      }
       
       const response = await axios.post(endpoint, formData, config);
+
+      if (response.status >= 400) {
+        let errMsg = 'Request failed. Please try another image.';
+        if (response.data instanceof Blob) {
+          errMsg = await response.data.text();
+        } else if (typeof response.data === 'string') {
+          errMsg = response.data;
+        }
+        setErrorMessage(errMsg);
+        setStatus('error');
+        return;
+      }
       
       if (mode === 'encrypt') {
         const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -211,7 +326,7 @@ export default function App() {
                   <div>
                     <label className="block text-xs uppercase tracking-widest text-slate-400 mb-2">1. Cover Image (PNG/JPG)</label>
                     <div className={`relative border-2 border-dashed rounded-2xl p-8 text-center transition-all ${coverImage ? 'border-blue-500/50 bg-blue-500/10' : 'border-white/10 hover:border-white/30 hover:bg-white/5'}`}>
-                      <input type="file" accept="image/png, image/jpeg" onChange={(e) => setCoverImage(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                      <input type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" onChange={handleCoverImageChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                       {coverImage ? (
                         <span className="text-blue-300 font-medium">{coverImage.name}</span>
                       ) : (

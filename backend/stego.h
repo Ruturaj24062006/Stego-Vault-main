@@ -48,6 +48,13 @@ public:
         return image_data != nullptr;
     }
 
+    long long getCapacityBits() const {
+        if (!image_data || width <= 0 || height <= 0 || channels <= 0) {
+            return 0;
+        }
+        return 1LL * width * height * channels;
+    }
+
     // NEW: This writes the encoded PNG data to a memory buffer instead of a file
     std::string saveImageToMemory() {
         std::string buffer;
