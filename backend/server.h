@@ -17,9 +17,9 @@
 class AppServer {
 private:
     static constexpr long long PAYLOAD_HEADER_BITS = 32;
-    static constexpr size_t MAX_TEXT_PAYLOAD_BYTES = 200000;
-    static constexpr size_t MAX_FILE_PAYLOAD_BYTES = 2000000;
-    static constexpr const char* CAPACITY_ERROR_MESSAGE = "The selected image is too small to store this data. Please upload a larger image.";
+    static constexpr size_t MAX_TEXT_PAYLOAD_BYTES = 5000000;
+    static constexpr size_t MAX_FILE_PAYLOAD_BYTES = 20000000;
+    static constexpr const char* CAPACITY_ERROR_MESSAGE = "The selected image is too small to store this data. Please upload a larger image. For large files (>8MB), use high-resolution images (2560x2560px or larger)";
 
     httplib::Server svr;
     std::string host;
@@ -35,6 +35,72 @@ private:
         });
         return value;
     }
+
+    // Simple password hash function using XOR and modular arithmetic
+    uint32_t hashPassword(const std::string& password) {
+        uint32_t hash = 2166136261u; // FNV offset basis
+        for (unsigned char c : password) {
+            hash ^= c;
+            hash *= 16777619u; // FNV prime
+        }
+        return hash;
+    }
+
+    // XOR encrypt/decrypt with password
+    std::string xorEncryptDecrypt(const std::string& data, const std::string& password) {
+        std::string result = data;
+        for (size_t i = 0; i < result.length(); ++i) {
+            result[i] ^= password[i % password.length()];
+        }
+        return result;
+    }
+
+    // Format: STEGO_PROTECTED|||<password_hash>|||<encrypted_message>
+    std::string encryptMessageWithPassword(const std::string& message, const std::string& password) {
+        const uint32_t passHash = hashPassword(password);
+        const std::string encrypted = xorEncryptDecrypt(message, password);
+        
+        // Convert hash to hex string
+        char hashBuffer[16];
+        snprintf(hashBuffer, sizeof(hashBuffer), "%08x", passHash);
+        
+        return std::string("STEGO_PROTECTED|||") + hashBuffer + std::string("|||") + encrypted;
+    }
+
+    // Returns decrypted message if password is correct, empty string if wrong password
+    std::string decryptMessageWithPassword(const std::string& protectedPayload, const std::string& password, std::string& errorMessage) {
+        const std::string prefix = "STEGO_PROTECTED|||";
+        if (protectedPayload.substr(0, prefix.length()) != prefix) {
+            errorMessage = "Invalid protected payload format.";
+            return "";
+        }
+
+        const std::string remaining = protectedPayload.substr(prefix.length());
+        const size_t hashEnd = remaining.find("|||");
+        if (hashEnd == std::string::npos) {
+            errorMessage = "Invalid protected payload format.";
+            return "";
+        }
+
+        const std::string hashStr = remaining.substr(0, hashEnd);
+        const std::string encrypted = remaining.substr(hashEnd + 3);
+
+        // Verify password hash
+        uint32_t providedHash = std::stoul(hashStr, nullptr, 16);
+        uint32_t expectedHash = hashPassword(password);
+        
+        if (providedHash != expectedHash) {
+            errorMessage = "Incorrect password. Unable to decrypt the message.";
+            return "";
+        }
+
+        return xorEncryptDecrypt(encrypted, password);
+    }
+
+    bool isPasswordProtected(const std::string& payload) {
+        return payload.substr(0, 17) == "STEGO_PROTECTED|||";
+    }
+
 
     bool hasAllowedImageExtension(const std::string& filename) {
         const size_t extensionIndex = filename.find_last_of('.');
@@ -97,12 +163,12 @@ private:
             const std::string base64Data = comma == std::string::npos ? "" : dataUrl.substr(comma + 1);
 
             if (!startsWith(prefix, "data:") || prefix.find(";base64") == std::string::npos || base64Data.empty()) {
-                errorMessage = "Only text or small files are supported.";
+                errorMessage = "File format error. Ensure file is properly encoded as base64 data URL.";
                 return false;
             }
 
             if (estimateBase64DecodedSize(base64Data) > MAX_FILE_PAYLOAD_BYTES) {
-                errorMessage = "Only text or small files are supported.";
+                errorMessage = "File size exceeds 20MB limit. Use a high-resolution cover image (2560x2560px+) for large files.";
                 return false;
             }
 
@@ -110,7 +176,7 @@ private:
         }
 
         if (payload.size() > MAX_TEXT_PAYLOAD_BYTES) {
-            errorMessage = "Only text or small files are supported.";
+            errorMessage = "Text message exceeds 5MB limit. Please reduce the message length.";
             return false;
         }
 
@@ -279,12 +345,18 @@ private:
             auto image_file = req.get_file_value("image");
             auto message_file = req.get_file_value("message");
             std::string secretMessage = message_file.content;
+            std::string password = req.get_param_value("password");
             std::string validationError;
 
             if (!validateImageUpload(image_file, validationError)) {
                 res.status = 400;
                 res.set_content(validationError, "text/plain");
                 return;
+            }
+
+            // Encrypt message with password if provided
+            if (!password.empty()) {
+                secretMessage = encryptMessageWithPassword(secretMessage, password);
             }
 
             if (!validateSecretPayload(secretMessage, validationError)) {
@@ -335,6 +407,7 @@ private:
             }
 
             auto image_file = req.get_file_value("image");
+            std::string password = req.get_param_value("password");
             std::string validationError;
 
             if (!validateImageUpload(image_file, validationError)) {
@@ -361,8 +434,28 @@ private:
                 res.status = 400;
                 res.set_content("No hidden data found or image corrupted.", "text/plain");
             } else {
-                res.status = 200;
-                res.set_content(decodedMessage, "text/plain");
+                // Check if message is password-protected
+                if (isPasswordProtected(decodedMessage)) {
+                    if (password.empty()) {
+                        res.status = 400;
+                        res.set_content("This image is password-protected. Please provide a password.", "text/plain");
+                        return;
+                    }
+
+                    // Attempt to decrypt with provided password
+                    std::string decryptedMessage = decryptMessageWithPassword(decodedMessage, password, validationError);
+                    if (decryptedMessage.empty()) {
+                        res.status = 400;
+                        res.set_content(validationError, "text/plain");
+                        return;
+                    }
+
+                    res.status = 200;
+                    res.set_content(decryptedMessage, "text/plain");
+                } else {
+                    res.status = 200;
+                    res.set_content(decodedMessage, "text/plain");
+                }
             }
         });
     }

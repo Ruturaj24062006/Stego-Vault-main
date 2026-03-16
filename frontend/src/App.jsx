@@ -6,14 +6,15 @@ import { Lock, Unlock, Upload, FileAudio, FileText, Image as ImageIcon, Download
 export default function App() {
   const allowedImageTypes = ['image/png', 'image/jpeg', 'image/jpg'];
   const allowedImageExtensions = ['.png', '.jpg', '.jpeg'];
-  const maxSecretFileSizeBytes = 2 * 1024 * 1024;
-  const capacityErrorMessage = 'The selected image is too small to store this data. Please upload a larger image.';
+  const maxSecretFileSizeBytes = 20 * 1024 * 1024;
+  const capacityErrorMessage = 'The selected image is too small to store this data. Please upload a larger image. For large files (>8MB), use high-resolution images (2560x2560px or larger).';
 
   const [mode, setMode] = useState('encrypt');
   const [coverImage, setCoverImage] = useState(null);
   const [secretType, setSecretType] = useState('text'); 
   const [secretText, setSecretText] = useState("");
   const [secretFile, setSecretFile] = useState(null);
+  const [password, setPassword] = useState("");
   
   const [status, setStatus] = useState("idle"); 
   const [resultUrl, setResultUrl] = useState(null);
@@ -96,11 +97,18 @@ export default function App() {
       setErrorMessage('Only image files are supported for steganography');
       return;
     }
+
+    if (!password.trim()) {
+      setStatus('error');
+      setErrorMessage('Please enter a password to protect your data.');
+      return;
+    }
     
     setStatus("processing");
     setErrorMessage("");
     const formData = new FormData();
     formData.append("image", coverImage);
+    formData.append("password", password);
     const imageCapacityBits = await getImageCapacityBits(coverImage);
     let secretPayload = '';
     const textEncoder = new TextEncoder();
@@ -124,7 +132,7 @@ export default function App() {
 
         if (secretFile.size > maxSecretFileSizeBytes) {
           setStatus('error');
-          setErrorMessage('Only text or small files are supported.');
+          setErrorMessage('File size exceeds 20MB limit. For large files (>8MB), use high-resolution cover images (2560x2560px or larger).');
           return;
         }
 
@@ -215,7 +223,7 @@ export default function App() {
   const reset = () => {
     setStatus('idle'); setResultUrl(null); setResultText(null); 
     setSecretText(""); setSecretFile(null); setCoverImage(null);
-    setErrorMessage("");
+    setErrorMessage(""); setPassword("");
   };
 
   const scrollToTool = () => {
@@ -338,11 +346,26 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Password Input */}
+                  <div>
+                    <label className="block text-xs uppercase tracking-widest text-slate-400 mb-2">2. Password (Required)</label>
+                    <div className="relative">
+                      <input 
+                        type="password" 
+                        value={password} 
+                        onChange={(e) => setPassword(e.target.value)} 
+                        placeholder="Enter a strong password to protect your data..."
+                        className="w-full bg-black/20 border border-white/10 rounded-2xl p-4 focus:outline-none focus:border-blue-500/50 transition-all text-slate-200 placeholder-slate-600"
+                      />
+                      <Lock className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 pointer-events-none" />
+                    </div>
+                  </div>
+
                   {/* Secret Data Input */}
                   {mode === 'encrypt' && (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                       <div className="flex items-center justify-between mb-2">
-                        <label className="text-xs uppercase tracking-widest text-slate-400">2. Secret Data to Hide</label>
+                        <label className="text-xs uppercase tracking-widest text-slate-400">3. Secret Data to Hide</label>
                         <div className="flex gap-2 bg-black/40 p-1 rounded-lg">
                           <button onClick={() => setSecretType('text')} className={`px-3 py-1 rounded text-xs transition-all ${secretType === 'text' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Text</button>
                           <button onClick={() => setSecretType('file')} className={`px-3 py-1 rounded text-xs transition-all ${secretType === 'file' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>File</button>
