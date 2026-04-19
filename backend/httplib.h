@@ -2375,7 +2375,12 @@ inline std::string base64_encode(const std::string &in) {
 
 inline bool is_file(const std::string &path) {
 #ifdef _WIN32
+  // MinGW doesn't provide _access_s; use _access instead.
+#if defined(__MINGW32__) && !defined(_MSC_VER)
+  return _access(path.c_str(), 0) == 0;
+#else
   return _access_s(path.c_str(), 0) == 0;
+#endif
 #else
   struct stat st;
   return stat(path.c_str(), &st) >= 0 && S_ISREG(st.st_mode);

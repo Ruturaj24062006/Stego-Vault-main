@@ -86,7 +86,13 @@ private:
         const std::string encrypted = remaining.substr(hashEnd + 3);
 
         // Verify password hash
-        uint32_t providedHash = std::stoul(hashStr, nullptr, 16);
+        uint32_t providedHash = 0;
+        try {
+            providedHash = std::stoul(hashStr, nullptr, 16);
+        } catch (...) {
+            errorMessage = "Invalid protected payload format.";
+            return "";
+        }
         uint32_t expectedHash = hashPassword(password);
         
         if (providedHash != expectedHash) {
@@ -98,7 +104,16 @@ private:
     }
 
     bool isPasswordProtected(const std::string& payload) {
-        return payload.substr(0, 17) == "STEGO_PROTECTED|||";
+        return payload.find("STEGO_PROTECTED|||") != std::string::npos;
+    }
+
+    std::string normalizeProtectedPayload(const std::string& payload) {
+        const std::string marker = "STEGO_PROTECTED|||";
+        const size_t markerPos = payload.find(marker);
+        if (markerPos == std::string::npos) {
+            return payload;
+        }
+        return payload.substr(markerPos);
     }
 
 
@@ -115,6 +130,20 @@ private:
 
     bool startsWith(const std::string& value, const std::string& prefix) {
         return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    std::string getRequestFieldValue(const httplib::Request& req, const std::string& fieldName) {
+        // For multipart/form-data, text fields are usually sent as parts.
+        if (req.has_file(fieldName)) {
+            return req.get_file_value(fieldName).content;
+        }
+
+        // Fallback for query string or urlencoded form payloads.
+        if (req.has_param(fieldName)) {
+            return req.get_param_value(fieldName);
+        }
+
+        return "";
     }
 
     bool parseFilePayload(const std::string& payload, std::string& filename, std::string& dataUrl) {
@@ -345,8 +374,14 @@ private:
             auto image_file = req.get_file_value("image");
             auto message_file = req.get_file_value("message");
             std::string secretMessage = message_file.content;
-            std::string password = req.get_param_value("password");
+            std::string password = getRequestFieldValue(req, "password");
             std::string validationError;
+
+            if (password.empty()) {
+                res.status = 400;
+                res.set_content("Please enter a password to protect your data.", "text/plain");
+                return;
+            }
 
             if (!validateImageUpload(image_file, validationError)) {
                 res.status = 400;
@@ -385,7 +420,13 @@ private:
                 return;
             }
 
-            if (!stego.encodeData(compressedBits)) {
+            std::vector<bool> compressedBitVector;
+            compressedBitVector.reserve(compressedBits.size());
+            for (char bit : compressedBits) {
+                compressedBitVector.push_back(bit == '1');
+            }
+
+            if (!stego.embedRandom(compressedBitVector, password)) {
                 res.status = 400;
                 res.set_content(CAPACITY_ERROR_MESSAGE, "text/plain");
                 return;
@@ -407,8 +448,14 @@ private:
             }
 
             auto image_file = req.get_file_value("image");
-            std::string password = req.get_param_value("password");
+            std::string password = getRequestFieldValue(req, "password");
             std::string validationError;
+
+            if (password.empty()) {
+                res.status = 400;
+                res.set_content("Please provide the same password used during encoding.", "text/plain");
+                return;
+            }
 
             if (!validateImageUpload(image_file, validationError)) {
                 res.status = 400;
@@ -425,7 +472,12 @@ private:
                 return;
             }
 
-            std::string extractedBits = stego.decodeData();
+            std::string extractedBits = stego.extractRandom(password);
+            if (extractedBits.empty()) {
+                res.status = 400;
+                res.set_content("Incorrect password/key or corrupted image.", "text/plain");
+                return;
+            }
             
             // Use the persistent global compressor that remembers the tree!
             std::string decodedMessage = globalCompressor.decode(extractedBits);
@@ -443,7 +495,8 @@ private:
                     }
 
                     // Attempt to decrypt with provided password
-                    std::string decryptedMessage = decryptMessageWithPassword(decodedMessage, password, validationError);
+                    const std::string protectedPayload = normalizeProtectedPayload(decodedMessage);
+                    std::string decryptedMessage = decryptMessageWithPassword(protectedPayload, password, validationError);
                     if (decryptedMessage.empty()) {
                         res.status = 400;
                         res.set_content(validationError, "text/plain");

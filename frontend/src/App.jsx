@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Unlock, Upload, FileAudio, FileText, Image as ImageIcon, Download, CheckCircle, ArrowLeft, Shield, Cpu, Layers, ChevronDown } from 'lucide-react';
@@ -11,6 +11,7 @@ export default function App() {
 
   const [mode, setMode] = useState('encrypt');
   const [coverImage, setCoverImage] = useState(null);
+  const [coverImagePreviewUrl, setCoverImagePreviewUrl] = useState("");
   const [secretType, setSecretType] = useState('text'); 
   const [secretText, setSecretText] = useState("");
   const [secretFile, setSecretFile] = useState(null);
@@ -72,18 +73,34 @@ export default function App() {
 
     if (!isSupportedImageFile(file)) {
       setCoverImage(null);
+      if (coverImagePreviewUrl) {
+        window.URL.revokeObjectURL(coverImagePreviewUrl);
+      }
+      setCoverImagePreviewUrl("");
       setStatus('error');
       setErrorMessage('Only image files are supported for steganography');
       event.target.value = '';
       return;
     }
 
+    if (coverImagePreviewUrl) {
+      window.URL.revokeObjectURL(coverImagePreviewUrl);
+    }
+    setCoverImagePreviewUrl(window.URL.createObjectURL(file));
     setCoverImage(file);
     if (status === 'error') {
       setStatus('idle');
       setErrorMessage('');
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (coverImagePreviewUrl) {
+        window.URL.revokeObjectURL(coverImagePreviewUrl);
+      }
+    };
+  }, [coverImagePreviewUrl]);
 
   const handleSubmit = async () => {
     if (!coverImage) {
@@ -207,7 +224,7 @@ export default function App() {
       setStatus("success");
     } catch (error) {
       console.error("Error:", error);
-      let errMsg = 'Backend Connection Failed. Is the C++ Server running on port 8080?';
+      let errMsg = 'Backend connection failed. Start Docker Desktop and make sure the C++ server is running on port 8080.';
       if (error.response?.data) {
         if (error.response.data instanceof Blob) {
           errMsg = await error.response.data.text();
@@ -221,9 +238,42 @@ export default function App() {
   };
   
   const reset = () => {
-    setStatus('idle'); setResultUrl(null); setResultText(null); 
-    setSecretText(""); setSecretFile(null); setCoverImage(null);
-    setErrorMessage(""); setPassword("");
+    if (resultUrl) {
+      window.URL.revokeObjectURL(resultUrl);
+    }
+    setStatus('idle');
+    setResultUrl(null);
+    setResultText(null);
+    setExtractedName("");
+    setSecretText("");
+    setSecretFile(null);
+    setErrorMessage("");
+    // Keep cover image + password so users can quickly run another operation.
+  };
+
+  const switchMode = (nextMode) => {
+    if (mode === nextMode) {
+      return;
+    }
+
+    setMode(nextMode);
+    setStatus('idle');
+    if (resultUrl) {
+      window.URL.revokeObjectURL(resultUrl);
+    }
+    if (coverImagePreviewUrl) {
+      window.URL.revokeObjectURL(coverImagePreviewUrl);
+    }
+    setResultUrl(null);
+    setResultText(null);
+    setExtractedName("");
+    setSecretText("");
+    setSecretFile(null);
+    setCoverImage(null);
+    setCoverImagePreviewUrl("");
+    setPassword("");
+    setErrorMessage("");
+    // Do not carry uploaded image/password across tabs.
   };
 
   const scrollToTool = () => {
@@ -285,10 +335,10 @@ export default function App() {
         >
           {/* Header Tabs */}
           <div className="flex border-b border-white/10">
-            <button onClick={() => { setMode('encrypt'); reset(); }} className={`flex-1 py-5 text-sm font-bold tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${mode === 'encrypt' ? 'bg-blue-500/20 text-blue-400 border-b-2 border-blue-400' : 'text-slate-500 hover:bg-white/5'}`}>
+            <button onClick={() => switchMode('encrypt')} className={`flex-1 py-5 text-sm font-bold tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${mode === 'encrypt' ? 'bg-blue-500/20 text-blue-400 border-b-2 border-blue-400' : 'text-slate-500 hover:bg-white/5'}`}>
               <Lock className="w-4 h-4" /> Hide Data
             </button>
-            <button onClick={() => { setMode('decrypt'); reset(); }} className={`flex-1 py-5 text-sm font-bold tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${mode === 'decrypt' ? 'bg-purple-500/20 text-purple-400 border-b-2 border-purple-400' : 'text-slate-500 hover:bg-white/5'}`}>
+            <button onClick={() => switchMode('decrypt')} className={`flex-1 py-5 text-sm font-bold tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${mode === 'decrypt' ? 'bg-purple-500/20 text-purple-400 border-b-2 border-purple-400' : 'text-slate-500 hover:bg-white/5'}`}>
               <Unlock className="w-4 h-4" /> Extract Data
             </button>
           </div>
@@ -302,9 +352,19 @@ export default function App() {
                   
                   {mode === 'encrypt' ? (
                     resultUrl ? (
-                      <a href={resultUrl} download="stego_locked.png" className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold py-4 rounded-xl transition-all shadow-lg">
-                        <Download className="w-5 h-5" /> Download Locked Image
-                      </a>
+                      <div className="space-y-4">
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                          <p className="text-xs uppercase tracking-widest text-slate-400 mb-3">Locked Image Preview</p>
+                          <img
+                            src={resultUrl}
+                            alt="Locked image preview"
+                            className="mx-auto max-h-72 w-auto max-w-full rounded-xl object-contain"
+                          />
+                        </div>
+                        <a href={resultUrl} download="stego_locked.png" className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold py-4 rounded-xl transition-all shadow-lg">
+                          <Download className="w-5 h-5" /> Download Locked Image
+                        </a>
+                      </div>
                     ) : (
                       <div className="text-slate-400 text-sm bg-white/5 p-4 rounded-xl border border-white/10">
                         Image saved successfully to the backend server folder as <strong>temp_encoded.png</strong>.
@@ -336,7 +396,16 @@ export default function App() {
                     <div className={`relative border-2 border-dashed rounded-2xl p-8 text-center transition-all ${coverImage ? 'border-blue-500/50 bg-blue-500/10' : 'border-white/10 hover:border-white/30 hover:bg-white/5'}`}>
                       <input type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" onChange={handleCoverImageChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                       {coverImage ? (
-                        <span className="text-blue-300 font-medium">{coverImage.name}</span>
+                        <div className="space-y-3">
+                          {coverImagePreviewUrl && (
+                            <img
+                              src={coverImagePreviewUrl}
+                              alt="Selected cover preview"
+                              className="mx-auto h-28 w-auto max-w-full rounded-xl object-contain border border-blue-500/30"
+                            />
+                          )}
+                          <span className="block text-blue-300 font-medium">{coverImage.name}</span>
+                        </div>
                       ) : (
                         <div className="flex flex-col items-center text-slate-500">
                           <Upload className="w-8 h-8 mb-3 opacity-50" />
@@ -395,7 +464,7 @@ export default function App() {
                     {status === 'processing' ? 'Processing Matrix...' : (mode === 'encrypt' ? 'Lock Data Inside Image' : 'Extract Hidden Data')}
                   </button>
                   
-                  {status === 'error' && <div className="text-red-400 text-center text-sm mt-4 bg-red-500/10 p-3 rounded-lg border border-red-500/20">{errorMessage || 'Backend Connection Failed. Is the C++ Server running on port 8080?'}</div>}
+                  {status === 'error' && <div className="text-red-400 text-center text-sm mt-4 bg-red-500/10 p-3 rounded-lg border border-red-500/20">{errorMessage || 'Backend connection failed. Start Docker Desktop and make sure the C++ server is running on port 8080.'}</div>}
                 </motion.div>
               )}
             </AnimatePresence>

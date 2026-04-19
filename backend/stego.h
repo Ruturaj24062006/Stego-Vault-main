@@ -1,7 +1,10 @@
 #ifndef IMAGE_STEGO_H
 #define IMAGE_STEGO_H
 
+#include <cstdint>
 #include <iostream>
+#include <numeric>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -22,6 +25,109 @@ private:
 
     char readBit(unsigned char byte) {
         return (byte & 1) ? '1' : '0';
+    }
+
+    uint64_t hashKey(const std::string& key) const {
+        uint64_t hash = 1469598103934665603ULL;
+        for (unsigned char ch : key) {
+            hash ^= ch;
+            hash *= 1099511628211ULL;
+        }
+        return hash;
+    }
+
+    size_t chooseStep(size_t capacity, uint64_t seed) const {
+        if (capacity <= 1) {
+            return 1;
+        }
+
+        size_t step = static_cast<size_t>((seed % (capacity - 1)) + 1);
+        while (std::gcd(step, capacity) != 1) {
+            step = (step + 1) % capacity;
+            if (step == 0) {
+                step = 1;
+            }
+        }
+
+        return step;
+    }
+
+    size_t chooseStart(size_t capacity, uint64_t seed) const {
+        return capacity == 0 ? 0 : static_cast<size_t>(seed % capacity);
+    }
+
+    bool writeBitsAtPositions(const std::vector<bool>& bits, const std::string& key) {
+        if (!image_data) {
+            return false;
+        }
+
+        const size_t capacity = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
+        const size_t requiredBits = bits.size() + 32;
+        if (requiredBits > capacity) {
+            return false;
+        }
+
+        const uint64_t seed = hashKey(key);
+        const size_t start = chooseStart(capacity, seed);
+        const size_t step = chooseStep(capacity, seed >> 1);
+
+        size_t position = start;
+
+        auto writeHeaderBit = [&](char bit) {
+            writeBit(image_data[position], bit);
+            position = (position + step) % capacity;
+        };
+
+        for (int i = 31; i >= 0; --i) {
+            const char headerBit = ((bits.size() >> i) & 1ULL) ? '1' : '0';
+            writeHeaderBit(headerBit);
+        }
+
+        for (bool bit : bits) {
+            writeBit(image_data[position], bit ? '1' : '0');
+            position = (position + step) % capacity;
+        }
+
+        return true;
+    }
+
+    std::vector<bool> readBitsAtPositions(const std::string& key, size_t bitCount) {
+        std::vector<bool> bits;
+        if (!image_data || bitCount == 0) {
+            return bits;
+        }
+
+        const size_t capacity = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
+        if (bitCount + 32 > capacity) {
+            return {};
+        }
+
+        const uint64_t seed = hashKey(key);
+        const size_t start = chooseStart(capacity, seed);
+        const size_t step = chooseStep(capacity, seed >> 1);
+
+        size_t position = start;
+        size_t payloadLength = 0;
+
+        for (int i = 0; i < 32; ++i) {
+            const char bit = readBit(image_data[position]);
+            if (bit == '1') {
+                payloadLength |= (1ULL << (31 - i));
+            }
+            position = (position + step) % capacity;
+        }
+
+        if (payloadLength == 0 || payloadLength + 32 > capacity || payloadLength != bitCount) {
+            return {};
+        }
+
+        bits.reserve(payloadLength);
+        for (size_t i = 0; i < payloadLength; ++i) {
+            bits.push_back(readBit(image_data[position]) == '1');
+            position = (position + step) % capacity;
+        }
+
+        return bits;
     }
 
     // NEW: Callback function used by stb_image_write to push bytes into our C++ string
@@ -65,45 +171,60 @@ public:
         return buffer;
     }
 
+    bool embedRandom(const std::vector<bool>& bits, const std::string& key) {
+        return writeBitsAtPositions(bits, key);
+    }
+
+    std::string extractRandom(const std::string& key) {
+        if (!image_data) {
+            return "";
+        }
+
+        const size_t capacity = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
+        if (capacity < 32) {
+            return "";
+        }
+
+        const uint64_t seed = hashKey(key);
+        const size_t start = chooseStart(capacity, seed);
+        const size_t step = chooseStep(capacity, seed >> 1);
+
+        size_t position = start;
+        size_t payloadLength = 0;
+
+        for (int i = 0; i < 32; ++i) {
+            const char bit = readBit(image_data[position]);
+            if (bit == '1') {
+                payloadLength |= (1ULL << (31 - i));
+            }
+            position = (position + step) % capacity;
+        }
+
+        if (payloadLength == 0 || payloadLength + 32 > capacity) {
+            return "";
+        }
+
+        std::string extractedBinary;
+        extractedBinary.reserve(payloadLength);
+        for (size_t i = 0; i < payloadLength; ++i) {
+            extractedBinary.push_back(readBit(image_data[position]));
+            position = (position + step) % capacity;
+        }
+
+        return extractedBinary;
+    }
+
     bool encodeData(const std::string& binaryString) {
-        if (!image_data) return false;
-        long long maxCapacity = width * height * channels;
-        
-        std::string lengthHeader = "";
-        long long dataLength = binaryString.length();
-        for (int i = 31; i >= 0; --i) {
-            lengthHeader += ((dataLength >> i) & 1) ? '1' : '0';
+        std::vector<bool> bits;
+        bits.reserve(binaryString.size());
+        for (char bit : binaryString) {
+            bits.push_back(bit == '1');
         }
-
-        std::string fullPayload = lengthHeader + binaryString;
-
-        if (fullPayload.length() > maxCapacity) return false;
-
-        for (size_t i = 0; i < fullPayload.length(); i++) {
-            writeBit(image_data[i], fullPayload[i]);
-        }
-        return true;
+        return embedRandom(bits, "");
     }
 
     std::string decodeData() {
-        if (!image_data) return "";
-
-        long long dataLength = 0;
-        for (int i = 0; i < 32; i++) {
-            char bit = readBit(image_data[i]);
-            if (bit == '1') {
-                dataLength |= (1LL << (31 - i));
-            }
-        }
-
-        long long maxCapacity = width * height * channels;
-        if (dataLength < 0 || dataLength + 32 > maxCapacity) return ""; 
-
-        std::string extractedBinary = "";
-        for (long long i = 32; i < 32 + dataLength; i++) {
-            extractedBinary += readBit(image_data[i]);
-        }
-        return extractedBinary;
+        return extractRandom("");
     }
 };
 
